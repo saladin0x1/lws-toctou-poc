@@ -1,0 +1,64 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/debian11"
+  config.vm.network "forwarded_port", guest: 22, host: 2225, id: "ssh"
+  config.vm.network "forwarded_port", guest: 80, host: 8080, id: "http"
+  config.vm.network "forwarded_port", guest: 7681, host: 7681, id: "ttyd"
+  config.vm.provider "qemu" do |qe|
+    qe.arch = "x86_64"
+    qe.machine = "q35,accel=hvf"
+    qe.cpu = "host"
+    qe.memory = "2048"
+    qe.smp = "cpus=2"
+    qe.net_device = "virtio-net-pci"
+    qe.qemu_dir = "/usr/local/share/qemu"
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    set -e
+    
+    # === PACKAGES ===
+    apt-get update
+    apt-get install -y build-essential cmake git libssl-dev libjson-c-dev zlib1g-dev libuv1-dev
+
+    # === USERS & GROUPS ===
+    groupadd -g 1010 devteam || true
+    useradd -u 1001 -g devteam -m -s /bin/bash svc_runner || true
+    useradd -u 1002 -g devteam -m -s /bin/bash attacker || true
+
+    # === SHARED SOCKET DIRECTORY ===
+    mkdir -p /opt/sockets
+    chown root:devteam /opt/sockets
+    chmod 2775 /opt/sockets
+
+    # === BUILD LIBWEBSOCKETS (vulnerable version) ===
+    cd /home/vagrant
+    rm -rf libwebsockets  # Force rebuild
+    git clone --depth 1 https://github.com/warmcat/libwebsockets.git
+    cd libwebsockets
+    mkdir -p build && cd build
+    cmake .. -DLWS_WITH_LIBUV=ON -DLWS_WITH_UNIX_SOCK=ON
+    make -j$(nproc)
+    make install
+    ldconfig
+
+    # === BUILD TTYD ===
+    cd /home/vagrant
+    if [ ! -d ttyd ]; then
+      git clone https://github.com/tsl0922/ttyd
+    fi
+    cd ttyd
+    mkdir -p build && cd build
+    cmake ..
+    make -j$(nproc)
+    cp ttyd /usr/local/bin/
+
+    echo "=== PROVISIONING COMPLETE ==="
+    echo "Users:"
+    id svc_runner
+    id attacker
+    echo "Group:"
+    getent group devteam
+    echo "Socket dir:"
+    ls -ld /opt/sockets
+  SHELL
+end
